@@ -1,0 +1,496 @@
+1. Pods in the `default` namespace.
+2. Pods with the label `version:v1` in any namespace.
+
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-np
+  namespace: testing
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx-test
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+        - podSelector:
+            matchLabels:
+              version: v1
+```
+
+---
+
+
+
+
+
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: testing
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+```
+
+---
+
+
+
+1. Fetch the `service-account-name` used by the pod `nginx-pod` in the namespace `test-system` and save it to `/candidate/KSC00124.txt`.
+2. Create a `Role` named `dev-test-role` in `test-system` that can perform `update` operations on resources of type `namespaces`.
+3. Create a `RoleBinding` named `dev-test-role-binding` to bind the new role to the pod’s `ServiceAccount`.
+
+
+1. Fetch the service account name:
+   ```bash
+   kubectl get pod nginx-pod -n test-system -o jsonpath='{.spec.serviceAccountName}' > /candidate/KSC00124.txt
+   ```
+
+2. Define the `Role`:
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: Role
+   metadata:
+     name: dev-test-role
+     namespace: test-system
+   rules:
+     - apiGroups: [""]
+       resources: ["namespaces"]
+       verbs: ["update"]
+   ```
+
+3. Create the `RoleBinding`:
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: RoleBinding
+   metadata:
+     name: dev-test-role-binding
+     namespace: test-system
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: Role
+     name: dev-test-role
+   subjects:
+     - kind: ServiceAccount
+       name: <service-account-name>
+       namespace: test-system
+   ```
+
+---
+
+
+
+1. Enable the admission plugin for a functional image scanner at `https://acme.local:8081/image_policy`.
+2. Validate the configuration and set it to implicit deny.
+3. Test the setup by deploying a pod using an image with the `latest` tag.
+
+
+1. Enable the admission plugin in the `kube-apiserver` configuration file:
+   ```yaml
+   spec:
+     containers:
+       - command:
+           - kube-apiserver
+           - --enable-admission-plugins=ImagePolicyWebhook
+           - --admission-control-config-file=/etc/kubernetes/confcontrol/image-policy-config.yaml
+   ```
+
+2. Define the webhook configuration file `/etc/kubernetes/confcontrol/image-policy-config.yaml`:
+   ```yaml
+   apiVersion: apiserver.k8s.io/v1alpha1
+   kind: AdmissionConfiguration
+   plugins:
+     - name: ImagePolicyWebhook
+       configuration:
+         imagePolicy:
+           allowTTL: 30
+           denyTTL: 30
+           retryBackoff: 500
+           defaultPolicy: "Deny"
+           imageWhitelist:
+             - "myregistry.io/*"
+           webhook:
+             url: "https://acme.local:8081/image_policy"
+   ```
+
+3. Restart the `kube-apiserver` and test by deploying a pod with an image using the `latest` tag:
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: test-pod
+   spec:
+     containers:
+       - name: nginx
+         image: nginx:latest
+   ```
+   Deploy:
+   ```bash
+   kubectl apply -f test-pod.yaml
+   ```
+
+---
+
+
+
+1. Fix API Server:
+   - Ensure `--authorization-mode` includes `RBAC` and `Node`.
+   - Ensure `--profiling=false`.
+2. Fix Kubelet:
+   - Set `--anonymous-auth=false`.
+   - Set `--authorization-mode=Webhook`.
+3. Fix ETCD:
+   - Ensure `--auto-tls=false`.
+
+
+1. **API Server**: Update `/etc/kubernetes/manifests/kube-apiserver.yaml`:
+   ```yaml
+   spec:
+     containers:
+       - command:
+           - kube-apiserver
+           - --authorization-mode=RBAC,Node
+           - --profiling=false
+   ```
+
+2. **Kubelet**: Update `/etc/systemd/system/kubelet.service.d/10-kubeadm.conf`:
+   ```bash
+   Environment="KUBELET_CONFIG_ARGS=--authorization-mode=Webhook --anonymous-auth=false"
+   ```
+   Reload and restart Kubelet:
+   ```bash
+   systemctl daemon-reload
+   systemctl restart kubelet
+   ```
+
+3. **ETCD**: Update `/etc/kubernetes/manifests/etcd.yaml`:
+   ```yaml
+   spec:
+     containers:
+       - command:
+           - etcd
+           - --auto-tls=false
+   ```
+
+---
+
+
+
+
+1. Create a `PodSecurityPolicy` named `prevent-privileged-policy` to disallow privileged pods.
+2. Create a `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding`.
+
+
+1. Define the `PodSecurityPolicy`:
+   ```yaml
+   apiVersion: policy/v1beta1
+   kind: PodSecurityPolicy
+   metadata:
+     name: prevent-privileged-policy
+   spec:
+     privileged: false
+     seLinux:
+       rule: RunAsAny
+     supplementalGroups:
+       rule: RunAsAny
+     runAsUser:
+       rule: MustRunAsNonRoot
+     fsGroup:
+       rule: RunAsAny
+     volumes:
+       - '*'
+   ```
+
+2. Create supporting resources:
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: psp-sa
+     namespace: default
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: prevent-role
+   rules:
+     - apiGroups: ["policy"]
+       resources: ["podsecuritypolicies"]
+       verbs: ["use"]
+       resourceNames: ["prevent-privileged-policy"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata:
+     name: prevent-role-binding
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: ClusterRole
+     name: prevent-role
+   subjects:
+     - kind: ServiceAccount
+       name: psp-sa
+       namespace: default
+   ```
+
+3. Verification: Attempt creating a privileged pod—it should fail.
+
+---
+
+
+
+
+1. Enforce an AppArmor profile to restrict `ping`, `top`, and `sh` commands.
+
+1. Create the AppArmor profile:
+   Save the profile as `/etc/apparmor.d/restrict-commands`:
+   ```plaintext
+   #include <tunables/global>
+   profile restrict-commands {
+     network,
+     deny /bin/ping x,
+     deny /usr/bin/top x,
+     deny /bin/sh x,
+   }
+   ```
+
+2. Load the profile:
+   ```bash
+   apparmor_parser -r /etc/apparmor.d/restrict-commands
+   ```
+
+3. Apply the profile to a pod:
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: restricted-pod
+     annotations:
+       container.apparmor.security.beta.kubernetes.io/restricted-container: restrict-commands
+   spec:
+     containers:
+       - name: restricted-container
+         image: nginx
+   ```
+
+4. Verification:
+   ```bash
+   kubectl exec -it restricted-pod -- ping 8.8.8.8 # Should fail
+   kubectl exec -it restricted-pod -- top          # Should fail
+   kubectl exec -it restricted-pod -- sh           # Should fail
+   ```
+
+---
+
+
+
+
+1. Fixed `Dockerfile`:
+   ```Dockerfile
+   FROM ubuntu:20.04
+   RUN apt-get update -y && apt-get install nginx -y
+   COPY entrypoint.sh /
+   ENTRYPOINT ["/entrypoint.sh"]
+   USER 1001
+   ```
+
+2. Updated pod manifest:
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: security-context-demo
+   spec:
+     securityContext:
+       runAsUser: 1000
+     containers:
+       - name: demo-container
+         image: gcr.io/google-samples/node-hello:1.0
+         securityContext:
+           allowPrivilegeEscalation: false
+           privileged: false
+   ```
+
+---
+
+
+
+
+1. **CSR creation and approval**:
+   ```bash
+   openssl genrsa -out john.key 2048
+   openssl req -new -key john.key -out john.csr -subj "/CN=john"
+   kubectl create csr john --key=./john.key --cert=./john.csr
+   kubectl certificate approve john
+   kubectl get csr john -o yaml
+   ```
+
+2. **Role and RoleBinding**:
+   ```yaml
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: Role
+   metadata:
+     namespace: john
+     name: john-role
+   rules:
+     - apiGroups: [""]
+       resources: ["pods", "secrets"]
+       verbs: ["list"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: RoleBinding
+   metadata:
+     name: john-role-binding
+     namespace: john
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: Role
+     name: john-role
+   subjects:
+     - kind: User
+       name: john
+       apiGroup: rbac.authorization.k8s.io
+   ```
+
+---
+
+
+
+
+
+
+1. Define the `PodSecurityPolicy`:
+   ```yaml
+   apiVersion: policy/v1beta1
+   kind: PodSecurityPolicy
+   metadata:
+     name: restricted-volumes
+   spec:
+     privileged: false
+     volumes:
+       - persistentVolumeClaim
+     seLinux:
+       rule: RunAsAny
+     runAsUser:
+       rule: MustRunAsNonRoot
+     fsGroup:
+       rule: RunAsAny
+     supplementalGroups:
+       rule: RunAsAny
+   ```
+
+2. Bind the policy to a `ServiceAccount`:
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: restricted-sa
+     namespace: default
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRole
+   metadata:
+     name: restricted-volumes-role
+   rules:
+     - apiGroups: ["policy"]
+       resources: ["podsecuritypolicies"]
+       verbs: ["use"]
+       resourceNames: ["restricted-volumes"]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata:
+     name: restricted-volumes-binding
+   roleRef:
+     apiGroup: rbac.authorization.k8s.io
+     kind: ClusterRole
+     name: restricted-volumes-role
+   subjects:
+     - kind: ServiceAccount
+       name: restricted-sa
+       namespace: default
+   ```
+
+---
+
+
+
+
+1. Create an AppArmor profile named `restrict-commands`.
+2. Save it as `/etc/apparmor.d/restrict-commands` and load it:
+   ```plaintext
+   #include <tunables/global>
+   profile restrict-commands {
+     network,
+     deny /bin/ping x,
+     deny /usr/bin/top x,
+     deny /bin/sh x,
+   }
+   ```
+   ```bash
+   apparmor_parser -r /etc/apparmor.d/restrict-commands
+   ```
+
+3. Apply the profile to a pod:
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: restricted-pod
+     annotations:
+       container.apparmor.security.beta.kubernetes.io/restricted-container: restrict-commands
+   spec:
+     containers:
+       - name: restricted-container
+         image: nginx
+   ```
+
+4. Verification:
+   ```bash
+   kubectl exec -it restricted-pod -- ping 8.8.8.8 # Should fail
+   kubectl exec -it restricted-pod -- top          # Should fail
+   kubectl exec -it restricted-pod -- sh           # Should fail
+   ```
+
+---
+
+
+
+
+1. Fixed `Dockerfile`:
+   ```Dockerfile
+   FROM ubuntu:20.04
+   RUN apt-get update -y && apt-get install nginx -y
+   COPY entrypoint.sh /
+   ENTRYPOINT ["/entrypoint.sh"]
+   USER 1001
+   ```
+
+2. Updated pod manifest:
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: security-context-demo
+   spec:
+     securityContext:
+       runAsUser: 1000
+     containers:
+       - name: demo-container
+         image: gcr.io/google-samples/node-hello:1.0
+         securityContext:
+           allowPrivilegeEscalation: false
+           privileged: false
+   ```
