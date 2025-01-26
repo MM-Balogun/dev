@@ -1,7 +1,8 @@
 1. Pods in the `default` namespace.
 2. Pods with the label `version:v1` in any namespace.
 
-
+k get pods -n <> --show-labels
+k get ns <> --show-labels
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -23,13 +24,32 @@ spec:
             matchLabels:
               version: v1
 ```
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          project: myproject
+    - podSelector:
+        matchLabels:
+          role: frontend
+    ports:
+    - protocol: TCP
+      port: 6379
+  
+
 
 ---
-
-
-
-
-
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -149,11 +169,12 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
 
 
 
-1. Fix API Server:
+1. Fix API Server: 
    - Ensure `--authorization-mode` includes `RBAC` and `Node`.
    - Ensure `--profiling=false`.
-2. Fix Kubelet:
+2. Fix Kubelet:  /var/lib/kubelet/config.yaml
    - Set `--anonymous-auth=false`.
+   - set webhook=true
    - Set `--authorization-mode=Webhook`.
 3. Fix ETCD:
    - Ensure `--auto-tls=false`.
@@ -187,119 +208,13 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
            - etcd
            - --auto-tls=false
    ```
+mv /etc/kubernetes/manifests/etcd.yaml /etc/kubernetes/
+- --client-cert-auth=true
+move back
+mv /etc/kubernetes/ /etc/kubernetes/manifests/etcd.yaml
+k get pods -n kube-system
 
 ---
-
-
-
-
-1. Create a `PodSecurityPolicy` named `prevent-privileged-policy` to disallow privileged pods.
-2. Create a `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding`.
-
-
-1. Define the `PodSecurityPolicy`:
-   ```yaml
-   apiVersion: policy/v1beta1
-   kind: PodSecurityPolicy
-   metadata:
-     name: prevent-privileged-policy
-   spec:
-     privileged: false
-     seLinux:
-       rule: RunAsAny
-     supplementalGroups:
-       rule: RunAsAny
-     runAsUser:
-       rule: MustRunAsNonRoot
-     fsGroup:
-       rule: RunAsAny
-     volumes:
-       - '*'
-   ```
-
-2. Create supporting resources:
-   ```yaml
-   apiVersion: v1
-   kind: ServiceAccount
-   metadata:
-     name: psp-sa
-     namespace: default
-   ---
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRole
-   metadata:
-     name: prevent-role
-   rules:
-     - apiGroups: ["policy"]
-       resources: ["podsecuritypolicies"]
-       verbs: ["use"]
-       resourceNames: ["prevent-privileged-policy"]
-   ---
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRoleBinding
-   metadata:
-     name: prevent-role-binding
-   roleRef:
-     apiGroup: rbac.authorization.k8s.io
-     kind: ClusterRole
-     name: prevent-role
-   subjects:
-     - kind: ServiceAccount
-       name: psp-sa
-       namespace: default
-   ```
-
-3. Verification: Attempt creating a privileged pod—it should fail.
-
----
-
-
-
-
-1. Enforce an AppArmor profile to restrict `ping`, `top`, and `sh` commands.
-
-1. Create the AppArmor profile:
-   Save the profile as `/etc/apparmor.d/restrict-commands`:
-   ```plaintext
-   #include <tunables/global>
-   profile restrict-commands {
-     network,
-     deny /bin/ping x,
-     deny /usr/bin/top x,
-     deny /bin/sh x,
-   }
-   ```
-
-2. Load the profile:
-   ```bash
-   apparmor_parser -r /etc/apparmor.d/restrict-commands
-   ```
-
-3. Apply the profile to a pod:
-   ```yaml
-   apiVersion: v1
-   kind: Pod
-   metadata:
-     name: restricted-pod
-     annotations:
-       container.apparmor.security.beta.kubernetes.io/restricted-container: restrict-commands
-   spec:
-     containers:
-       - name: restricted-container
-         image: nginx
-   ```
-
-4. Verification:
-   ```bash
-   kubectl exec -it restricted-pod -- ping 8.8.8.8 # Should fail
-   kubectl exec -it restricted-pod -- top          # Should fail
-   kubectl exec -it restricted-pod -- sh           # Should fail
-   ```
-
----
-
-
-
 
 1. Fixed `Dockerfile`:
    ```Dockerfile
@@ -328,9 +243,6 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
    ```
 
 ---
-
-
-
 
 1. **CSR creation and approval**:
    ```bash
@@ -371,10 +283,6 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
 ---
 
 
-
-
-
-
 1. Define the `PodSecurityPolicy`:
    ```yaml
    apiVersion: policy/v1beta1
@@ -394,6 +302,17 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
      supplementalGroups:
        rule: RunAsAny
    ```
+kubectl craete sa <> -n <>
+
+kubectl create clusterrole <clusterrole-name> \
+--verb=use \
+--resource=podsecuritypolicies
+
+kubectl create clusterrolebinding <binding-name> \
+--clusterrole=<clusterrole-name> \
+--serviceaccount=<namespace>:<service-account-name>
+
+test with pod tha has privileged set to true
 
 2. Bind the policy to a `ServiceAccount`:
    ```yaml
@@ -429,9 +348,6 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
 
 ---
 
-
-
-
 1. Create an AppArmor profile named `restrict-commands`.
 2. Save it as `/etc/apparmor.d/restrict-commands` and load it:
    ```plaintext
@@ -445,8 +361,10 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
    ```
    ```bash
    apparmor_parser -r /etc/apparmor.d/restrict-commands
+   sudo apparmor_parser < file or file-path>
+    sudo apparmor_status
    ```
-
+ container.apparmor.security.beta.kubernetes.io/restricted-container: localhost/<profile-name>
 3. Apply the profile to a pod:
    ```yaml
    apiVersion: v1
@@ -469,34 +387,6 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
    ```
 
 ---
-
-
-
-
-1. Fixed `Dockerfile`:
-   ```Dockerfile
-   FROM ubuntu:20.04
-   RUN apt-get update -y && apt-get install nginx -y
-   COPY entrypoint.sh /
-   ENTRYPOINT ["/entrypoint.sh"]
-   USER 1001
-   ```
-
-2. Updated pod manifest:
-   ```yaml
-   apiVersion: v1
-   kind: Pod
-   metadata:
-     name: security-context-demo
-   spec:
-     securityContext:
-       runAsUser: 1000
-     containers:
-       - name: demo-container
-         image: gcr.io/google-samples/node-hello:1.0
-         securityContext:
-           allowPrivilegeEscalation: false
-           privileged: false
    ```
    falco
      - rule: Log Specific Events
@@ -508,70 +398,29 @@ kubectl create rolebinding my-rolebinding --role=my-role --serviceaccount=defaul
 
    sudo falco -M 45 -r custom_rule.yaml > xyz.log
     falco --dry-run -r custom_rule.yaml
+
  ----
  Audit rules
 
- apiVersion: audit.k8s.io/v1
+apiVersion: audit.k8s.io/v1
 kind: Policy
+omitStages:
+  - "RequestReceived"
 rules:
-
-  # Log all requests at the Metadata level (e.g., list and watch operations)
   - level: Metadata
-    verbs: ["list", "watch"]
     resources:
-      - group: ""
-        resources: ["pods", "nodes", "services"]
-      - group: "apps"
-        resources: ["deployments", "statefulsets", "daemonsets"]
-    omitStages:
-      - "RequestReceived"
-
-  # Log request/response for sensitive operations like create, update, delete
+    - group: ""
+      resources: ["secrets"]  
   - level: RequestResponse
-    verbs: ["create", "update", "delete"]
     resources:
-      - group: ""
-        resources: ["secrets", "configmaps"]
-      - group: "rbac.authorization.k8s.io"
-        resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
-    omitStages:
-      - "RequestReceived"
-
-  # Log all events for a specific user (e.g., system:admin)
-  - level: RequestResponse
-    users: ["system:admin"]
-    omitStages:
-      - "RequestReceived"
-
-  # Log all failed requests at the Metadata level
-  - level: Metadata
-    verbs: ["*"]
+    - group: ""
+      resources: ["secrets", "configmaps"]
+  - level: Request
     resources:
-      - group: "*"
-        resources: ["*"]
-    userGroups: ["*"]
-    namespaces: ["*"]
-    nonResourceURLs: ["*"]
-    stage: "ResponseComplete"
-    omitStages:
-      - "RequestReceived"
-    requestObject: true
-
-  # Log all system events (e.g., from controllers or system:serviceaccount)
-  - level: RequestResponse
-    userGroups: ["system:serviceaccounts", "system:nodes"]
-    omitStages:
-      - "RequestReceived"
-
-  # Log non-resource requests (e.g., accessing `/healthz`, `/metrics`)
-  - level: Metadata
-    nonResourceURLs:
-      - "/healthz*"
-      - "/metrics"
-      - "/openapi/v2"
-    omitStages:
-      - "RequestReceived"
-
+    - group: ""
+      resources: ["services", "pods"]  
+    namespaces: ["web"]   
+  - level:  Metadata   
 
 - --audit-log-path=/var/log/kubernetes/audit.log
 - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
@@ -579,8 +428,69 @@ rules:
 - --audit-log-maxbackup=10    # Keep up to 10 backup audit log files
 - --audit-log-maxsize=100     # Maximum size of an audit log file in MB
 
-tail -f /var/log/kubernetes/audit.log
+sudo tail -f /var/log/kubernetes/audit.log
 
 
 
 
+---
+trivy
+
+k get pods -n <> --output=custom-colums="NAME:.metadata.name,IMAGE:.spec.containers[*].image"
+
+trivy image -s HIGH,CRITICAL <image>
+
+---
+
+secrets
+
+k get secret <> -n <> 
+echo  <user> | base64
+echo <user> | base64 --decode
+
+kubectl create secret generic <secret-name> \
+--from-literal=user=<user-value> \
+--from-literal=psw=1234 \
+-n <namespace>
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+  namespace: <namespace>
+spec:
+  containers:
+    - name: example-container
+      image: nginx
+      volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secret
+          readOnly: true
+  volumes:
+    - name: secret-volume
+      secret:
+        secretName: <secret-name>
+
+---
+gVisor
+kubectl create runtimeclass run-sc --handler=runsc
+
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: myclass 
+handler: runsc
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  runtimeClassName: myclass
+
+
+ Note : add runtimeClassName: myclass in the spec.containers
+
+ k exec -it -n <> -- dmesg
+---  
